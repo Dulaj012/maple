@@ -3,15 +3,25 @@
 
 // Check if user is logged in
 function isLoggedIn() {
-    return isset($_SESSION['user_id']) && !empty($_SESSION['user_id']);
+    if (!isset($_SESSION['user_id'])) {
+        return false;
+    }
+    
+    // Verify session
+    if (!isset($_SESSION['login_time']) || (time() - $_SESSION['login_time']) > 3600) {
+        session_destroy();
+        return false;
+    }
+    
+    return true;
 }
 
 // Check if user is admin
 function isAdmin() {
-    return isLoggedIn() && isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
+    return isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
 }
 
-// Login user with rate limiting and security
+// Login user
 function loginUser($email, $password) {
     global $conn;
     
@@ -24,14 +34,16 @@ function loginUser($email, $password) {
         unset($_SESSION['last_attempt']);
     }
     
-    $stmt = $conn->prepare("SELECT * FROM users WHERE email = ? AND status = 'active'");
+    $sql = "SELECT * FROM users WHERE email = ? AND status = 'active'";
+    $stmt = $conn->prepare($sql);
     $stmt->bind_param("s", $email);
     $stmt->execute();
     $result = $stmt->get_result();
     
-    if ($result && $user = $result->fetch_assoc()) {
+    if ($result && $result->num_rows > 0) {
+        $user = $result->fetch_assoc();
         if (password_verify($password, $user['password'])) {
-            // Reset login attempts on successful login
+            // Reset login attempts
             unset($_SESSION['login_attempts']);
             unset($_SESSION['last_attempt']);
             
@@ -40,9 +52,11 @@ function loginUser($email, $password) {
             $_SESSION['user_name'] = $user['name'];
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['user_role'] = $user['role'];
+            $_SESSION['login_time'] = time();
             
-            // Update last login timestamp
-            $stmt = $conn->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+            // Update last login
+            $sql = "UPDATE users SET last_login = NOW() WHERE id = ?";
+            $stmt = $conn->prepare($sql);
             $stmt->bind_param("i", $user['id']);
             $stmt->execute();
             
@@ -50,35 +64,36 @@ function loginUser($email, $password) {
         }
     }
     
-    // Track failed login attempts
-    $_SESSION['login_attempts'] = isset($_SESSION['login_attempts']) ? $_SESSION['login_attempts'] + 1 : 1;
+    // Track failed attempts
+    $_SESSION['login_attempts'] = ($_SESSION['login_attempts'] ?? 0) + 1;
     $_SESSION['last_attempt'] = time();
     
     return false;
 }
 
-// Register user with validation
+// Register user
 function registerUser($name, $email, $password) {
     global $conn;
     
-    // Validate email format
+    // Validate email
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         return false;
     }
     
     // Check if email exists
-    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+    $sql = "SELECT id FROM users WHERE email = ?";
+    $stmt = $conn->prepare($sql);
     $stmt->bind_param("s", $email);
     $stmt->execute();
     if ($stmt->get_result()->num_rows > 0) {
         return false;
     }
     
-    // Hash password with strong algorithm
+    // Hash password with Argon2id
     $hashedPassword = password_hash($password, PASSWORD_ARGON2ID);
     
-    // Insert user
-    $stmt = $conn->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
+    $sql = "INSERT INTO users (name, email, password) VALUES (?, ?, ?)";
+    $stmt = $conn->prepare($sql);
     $stmt->bind_param("sss", $name, $email, $hashedPassword);
     
     if ($stmt->execute()) {
@@ -87,99 +102,124 @@ function registerUser($name, $email, $password) {
     return false;
 }
 
-// Cart Functions with Stock Management
+// Cart Functions
 
-// Add to cart with stock validation
+// Add to cart
 function addToCart($productId, $quantity = 1) {
     global $conn;
     
-    $stmt = $conn->prepare("SELECT id, name, price, sale_price, quantity, image FROM products WHERE id = ? AND status = 'active' AND quantity >= ?");
-    $stmt->bind_param("ii", $productId, $quantity);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    // Start transaction
+    $conn->begin_transaction();
     
-    if ($result && $product = $result->fetch_assoc()) {
-        if (!isset($_SESSION['cart'])) {
-            $_SESSION['cart'] = [];
-        }
-        
-        $currentQty = isset($_SESSION['cart'][$productId]) ? $_SESSION['cart'][$productId]['quantity'] : 0;
-        $newQty = $currentQty + $quantity;
-        
-        // Check if total quantity exceeds stock
-        if ($newQty > $product['quantity']) {
-            return false;
-        }
-        
-        $_SESSION['cart'][$productId] = [
-            'id' => $product['id'],
-            'name' => $product['name'],
-            'price' => $product['sale_price'] ?? $product['price'],
-            'image' => $product['image'],
-            'quantity' => $newQty
-        ];
-        
-        return true;
-    }
-    return false;
-}
-
-// Update cart with stock validation
-function updateCart($productId, $quantity) {
-    global $conn;
-    
-    if ($quantity <= 0) {
-        unset($_SESSION['cart'][$productId]);
-        return true;
-    }
-    
-    $stmt = $conn->prepare("SELECT quantity FROM products WHERE id = ? AND status = 'active'");
-    $stmt->bind_param("i", $productId);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
-    if ($result && $product = $result->fetch_assoc()) {
-        if ($quantity <= $product['quantity']) {
-            $_SESSION['cart'][$productId]['quantity'] = $quantity;
-            return true;
-        }
-    }
-    return false;
-}
-
-// Remove from cart
-function removeFromCart($productId) {
-    if (isset($_SESSION['cart'][$productId])) {
-        unset($_SESSION['cart'][$productId]);
-        return true;
-    }
-    return false;
-}
-
-// Get cart items with latest prices
-function getCartItems() {
-    global $conn;
-    
-    if (!isset($_SESSION['cart']) || empty($_SESSION['cart'])) {
-        return [];
-    }
-    
-    $items = [];
-    foreach ($_SESSION['cart'] as $productId => $item) {
-        // Get latest product info
-        $stmt = $conn->prepare("SELECT price, sale_price, quantity FROM products WHERE id = ? AND status = 'active'");
+    try {
+        // Get product with row lock
+        $sql = "SELECT * FROM products WHERE id = ? AND status = 'active' FOR UPDATE";
+        $stmt = $conn->prepare($sql);
         $stmt->bind_param("i", $productId);
         $stmt->execute();
         $result = $stmt->get_result();
         
         if ($result && $product = $result->fetch_assoc()) {
-            // Update price if changed
-            $currentPrice = $product['sale_price'] ?? $product['price'];
-            $item['price'] = $currentPrice;
+            // Check stock
+            if ($product['quantity'] < $quantity) {
+                throw new Exception("Insufficient stock");
+            }
             
-            // Adjust quantity if stock reduced
+            if (!isset($_SESSION['cart'])) {
+                $_SESSION['cart'] = [];
+            }
+            
+            // Update cart
+            if (isset($_SESSION['cart'][$productId])) {
+                $newQuantity = $_SESSION['cart'][$productId]['quantity'] + $quantity;
+                if ($newQuantity > $product['quantity']) {
+                    throw new Exception("Insufficient stock");
+                }
+                $_SESSION['cart'][$productId]['quantity'] = $newQuantity;
+            } else {
+                $_SESSION['cart'][$productId] = [
+                    'id' => $product['id'],
+                    'name' => $product['name'],
+                    'price' => $product['sale_price'] ?? $product['price'],
+                    'image' => $product['image'],
+                    'quantity' => $quantity,
+                    'stock' => $product['quantity']
+                ];
+            }
+            
+            $conn->commit();
+            return true;
+        }
+        
+        throw new Exception("Product not found");
+    } catch (Exception $e) {
+        $conn->rollback();
+        return false;
+    }
+}
+
+// Update cart
+function updateCart($productId, $quantity) {
+    global $conn;
+    
+    // Start transaction
+    $conn->begin_transaction();
+    
+    try {
+        // Get product with row lock
+        $sql = "SELECT quantity FROM products WHERE id = ? AND status = 'active' FOR UPDATE";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($result && $product = $result->fetch_assoc()) {
+            if ($quantity > $product['quantity']) {
+                throw new Exception("Insufficient stock");
+            }
+            
+            if ($quantity > 0) {
+                $_SESSION['cart'][$productId]['quantity'] = $quantity;
+            } else {
+                unset($_SESSION['cart'][$productId]);
+            }
+            
+            $conn->commit();
+            return true;
+        }
+        
+        throw new Exception("Product not found");
+    } catch (Exception $e) {
+        $conn->rollback();
+        return false;
+    }
+}
+
+// Get cart items with real-time price updates
+function getCartItems() {
+    global $conn;
+    
+    if (!isset($_SESSION['cart'])) {
+        return [];
+    }
+    
+    $items = [];
+    foreach ($_SESSION['cart'] as $productId => $item) {
+        // Get current price
+        $sql = "SELECT price, sale_price, quantity FROM products WHERE id = ? AND status = 'active'";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($result && $product = $result->fetch_assoc()) {
+            $item['price'] = $product['sale_price'] ?? $product['price'];
+            $item['stock'] = $product['quantity'];
+            
+            // Adjust quantity if stock is insufficient
             if ($item['quantity'] > $product['quantity']) {
                 $item['quantity'] = $product['quantity'];
+                $_SESSION['cart'][$productId]['quantity'] = $product['quantity'];
             }
             
             $items[$productId] = $item;
@@ -192,19 +232,37 @@ function getCartItems() {
 // Calculate cart total with discounts
 function getCartTotal() {
     $items = getCartItems();
-    $total = 0;
+    $subtotal = 0;
     
     foreach ($items as $item) {
-        $total += $item['price'] * $item['quantity'];
+        $subtotal += $item['price'] * $item['quantity'];
     }
     
-    // Apply any active discounts
+    // Apply coupon discount if exists
     if (isset($_SESSION['coupon'])) {
-        $discount = calculateDiscount($total, $_SESSION['coupon']);
-        $total -= $discount;
+        $discount = calculateDiscount($subtotal, $_SESSION['coupon']);
+        return $subtotal - $discount;
     }
     
-    return $total;
+    return $subtotal;
+}
+
+// Calculate discount
+function calculateDiscount($subtotal, $coupon) {
+    if ($coupon['type'] === 'percentage') {
+        $discount = $subtotal * ($coupon['value'] / 100);
+        return min($discount, $coupon['max_discount'] ?? $discount);
+    }
+    return min($coupon['value'], $subtotal);
+}
+
+// Remove from cart
+function removeFromCart($productId) {
+    if (isset($_SESSION['cart'][$productId])) {
+        unset($_SESSION['cart'][$productId]);
+        return true;
+    }
+    return false;
 }
 
 // Clear cart

@@ -10,51 +10,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['product_id']) && isse
     $quantity = (int)$_POST['quantity'];
     
     try {
-        $conn->begin_transaction();
-        
-        // Lock the row for update
-        $stmt = $conn->prepare("SELECT quantity FROM products WHERE id = ? AND status = 'active' FOR UPDATE");
-        $stmt->bind_param("i", $productId);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result && $product = $result->fetch_assoc()) {
-            if ($quantity <= $product['quantity']) {
-                if (updateCart($productId, $quantity)) {
-                    $conn->commit();
-                    
-                    // Calculate new totals
-                    $cartTotal = getCartTotal();
-                    $itemCount = array_sum(array_column($_SESSION['cart'], 'quantity'));
-                    
-                    echo json_encode([
-                        'success' => true,
-                        'message' => 'Cart updated successfully!',
-                        'cart_total' => formatPrice($cartTotal),
-                        'item_count' => $itemCount
-                    ]);
-                    exit;
-                }
-            } else {
-                throw new Exception('Requested quantity not available in stock.');
-            }
+        if (updateCart($productId, $quantity)) {
+            $cartItems = getCartItems();
+            $cartTotal = getCartTotal();
+            
+            $response = [
+                'success' => true,
+                'message' => 'Cart updated successfully!',
+                'cart_count' => count($cartItems),
+                'cart_total' => formatPrice($cartTotal),
+                'item_total' => isset($cartItems[$productId]) ? 
+                    formatPrice($cartItems[$productId]['price'] * $cartItems[$productId]['quantity']) : 
+                    null
+            ];
         } else {
-            throw new Exception('Product not found or inactive.');
+            throw new Exception('Failed to update cart.');
         }
-        
-        $conn->rollback();
-        throw new Exception('Failed to update cart.');
     } catch (Exception $e) {
-        $conn->rollback();
-        echo json_encode([
+        $response = [
             'success' => false,
             'message' => $e->getMessage()
-        ]);
-        exit;
+        ];
     }
+    
+    echo json_encode($response);
+    exit;
 }
 
-echo json_encode([
-    'success' => false,
-    'message' => 'Invalid request'
-]);
+// Invalid request
+http_response_code(400);
+echo json_encode(['success' => false, 'message' => 'Invalid request']);
+exit;

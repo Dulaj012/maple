@@ -9,50 +9,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['product_id'])) {
     $productId = (int)$_POST['product_id'];
     $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 1;
     
+    // Validate quantity
     if ($quantity < 1) {
         $quantity = 1;
     }
     
     try {
-        $conn->begin_transaction();
-        
-        // Lock the row for update to prevent race conditions
-        $stmt = $conn->prepare("SELECT quantity FROM products WHERE id = ? AND status = 'active' FOR UPDATE");
-        $stmt->bind_param("i", $productId);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result && $product = $result->fetch_assoc()) {
-            if ($product['quantity'] >= $quantity) {
-                if (addToCart($productId, $quantity)) {
-                    $conn->commit();
-                    echo json_encode([
-                        'success' => true,
-                        'message' => 'Product added to cart successfully!',
-                        'cart_count' => count($_SESSION['cart'])
-                    ]);
-                    exit;
-                }
-            } else {
-                throw new Exception('Requested quantity not available in stock.');
-            }
+        if (addToCart($productId, $quantity)) {
+            $response = [
+                'success' => true,
+                'message' => 'Product added to cart successfully!',
+                'cart_count' => count($_SESSION['cart']),
+                'cart_total' => formatPrice(getCartTotal())
+            ];
         } else {
-            throw new Exception('Product not found or inactive.');
+            throw new Exception('Failed to add product to cart.');
         }
-        
-        $conn->rollback();
-        throw new Exception('Failed to add product to cart.');
     } catch (Exception $e) {
-        $conn->rollback();
-        echo json_encode([
+        $response = [
             'success' => false,
             'message' => $e->getMessage()
-        ]);
-        exit;
+        ];
     }
+    
+    echo json_encode($response);
+    exit;
 }
 
-echo json_encode([
-    'success' => false,
-    'message' => 'Invalid request'
-]);
+// Invalid request
+http_response_code(400);
+echo json_encode(['success' => false, 'message' => 'Invalid request']);
+exit;
