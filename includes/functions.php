@@ -3,45 +3,82 @@
 
 // Check if user is logged in
 function isLoggedIn() {
-    return isset($_SESSION['user_id']);
+    return isset($_SESSION['user_id']) && !empty($_SESSION['user_id']);
 }
 
 // Check if user is admin
 function isAdmin() {
-    return isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
+    return isLoggedIn() && isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
 }
 
-// Login user
+// Login user with rate limiting and security
 function loginUser($email, $password) {
     global $conn;
-    $email = clean($email);
     
-    $sql = "SELECT * FROM users WHERE email = ? AND status = 'active'";
-    $stmt = $conn->prepare($sql);
+    // Rate limiting
+    if (isset($_SESSION['login_attempts']) && $_SESSION['login_attempts'] >= 5) {
+        if (time() - $_SESSION['last_attempt'] < 300) { // 5 minutes lockout
+            return false;
+        }
+        unset($_SESSION['login_attempts']);
+        unset($_SESSION['last_attempt']);
+    }
+    
+    $stmt = $conn->prepare("SELECT * FROM users WHERE email = ? AND status = 'active'");
     $stmt->bind_param("s", $email);
     $stmt->execute();
     $result = $stmt->get_result();
     
-    if ($result && $result->num_rows > 0) {
-        $user = $result->fetch_assoc();
+    if ($result && $user = $result->fetch_assoc()) {
         if (password_verify($password, $user['password'])) {
+            // Reset login attempts on successful login
+            unset($_SESSION['login_attempts']);
+            unset($_SESSION['last_attempt']);
+            
+            // Set session variables
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user_name'] = $user['name'];
             $_SESSION['user_email'] = $user['email'];
             $_SESSION['user_role'] = $user['role'];
+            
+            // Update last login timestamp
+            $stmt = $conn->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+            $stmt->bind_param("i", $user['id']);
+            $stmt->execute();
+            
             return true;
         }
     }
+    
+    // Track failed login attempts
+    $_SESSION['login_attempts'] = isset($_SESSION['login_attempts']) ? $_SESSION['login_attempts'] + 1 : 1;
+    $_SESSION['last_attempt'] = time();
+    
     return false;
 }
 
-// Register user
+// Register user with validation
 function registerUser($name, $email, $password) {
     global $conn;
     
-    $sql = "INSERT INTO users (name, email, password) VALUES (?, ?, ?)";
-    $stmt = $conn->prepare($sql);
-    $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+    // Validate email format
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    
+    // Check if email exists
+    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    if ($stmt->get_result()->num_rows > 0) {
+        return false;
+    }
+    
+    // Hash password with strong algorithm
+    $hashedPassword = password_hash($password, PASSWORD_ARGON2ID);
+    
+    // Insert user
+    $stmt = $conn->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
     $stmt->bind_param("sss", $name, $email, $hashedPassword);
     
     if ($stmt->execute()) {
@@ -50,18 +87,14 @@ function registerUser($name, $email, $password) {
     return false;
 }
 
-// Cart Functions
+// Cart Functions with Stock Management
 
-// Add to cart
+// Add to cart with stock validation
 function addToCart($productId, $quantity = 1) {
     global $conn;
-    $productId = (int)$productId;
-    $quantity = (int)$quantity;
     
-    // Get product details
-    $sql = "SELECT * FROM products WHERE id = ? AND status = 'active'";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("i", $productId);
+    $stmt = $conn->prepare("SELECT id, name, price, sale_price, quantity, image FROM products WHERE id = ? AND status = 'active' AND quantity >= ?");
+    $stmt->bind_param("ii", $productId, $quantity);
     $stmt->execute();
     $result = $stmt->get_result();
     
@@ -70,32 +103,46 @@ function addToCart($productId, $quantity = 1) {
             $_SESSION['cart'] = [];
         }
         
-        // Check if product already in cart
-        if (isset($_SESSION['cart'][$productId])) {
-            $_SESSION['cart'][$productId]['quantity'] += $quantity;
-        } else {
-            $_SESSION['cart'][$productId] = [
-                'id' => $product['id'],
-                'name' => $product['name'],
-                'price' => $product['sale_price'] ?? $product['price'],
-                'image' => $product['image'],
-                'quantity' => $quantity
-            ];
+        $currentQty = isset($_SESSION['cart'][$productId]) ? $_SESSION['cart'][$productId]['quantity'] : 0;
+        $newQty = $currentQty + $quantity;
+        
+        // Check if total quantity exceeds stock
+        if ($newQty > $product['quantity']) {
+            return false;
         }
+        
+        $_SESSION['cart'][$productId] = [
+            'id' => $product['id'],
+            'name' => $product['name'],
+            'price' => $product['sale_price'] ?? $product['price'],
+            'image' => $product['image'],
+            'quantity' => $newQty
+        ];
+        
         return true;
     }
     return false;
 }
 
-// Update cart
+// Update cart with stock validation
 function updateCart($productId, $quantity) {
-    if (isset($_SESSION['cart'][$productId])) {
-        if ($quantity > 0) {
-            $_SESSION['cart'][$productId]['quantity'] = $quantity;
-        } else {
-            unset($_SESSION['cart'][$productId]);
-        }
+    global $conn;
+    
+    if ($quantity <= 0) {
+        unset($_SESSION['cart'][$productId]);
         return true;
+    }
+    
+    $stmt = $conn->prepare("SELECT quantity FROM products WHERE id = ? AND status = 'active'");
+    $stmt->bind_param("i", $productId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result && $product = $result->fetch_assoc()) {
+        if ($quantity <= $product['quantity']) {
+            $_SESSION['cart'][$productId]['quantity'] = $quantity;
+            return true;
+        }
     }
     return false;
 }
@@ -109,22 +156,54 @@ function removeFromCart($productId) {
     return false;
 }
 
-// Get cart items
+// Get cart items with latest prices
 function getCartItems() {
-    if (!isset($_SESSION['cart'])) {
+    global $conn;
+    
+    if (!isset($_SESSION['cart']) || empty($_SESSION['cart'])) {
         return [];
     }
-    return $_SESSION['cart'];
-}
-
-// Get cart total
-function getCartTotal() {
-    $total = 0;
-    if (isset($_SESSION['cart'])) {
-        foreach ($_SESSION['cart'] as $item) {
-            $total += $item['price'] * $item['quantity'];
+    
+    $items = [];
+    foreach ($_SESSION['cart'] as $productId => $item) {
+        // Get latest product info
+        $stmt = $conn->prepare("SELECT price, sale_price, quantity FROM products WHERE id = ? AND status = 'active'");
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($result && $product = $result->fetch_assoc()) {
+            // Update price if changed
+            $currentPrice = $product['sale_price'] ?? $product['price'];
+            $item['price'] = $currentPrice;
+            
+            // Adjust quantity if stock reduced
+            if ($item['quantity'] > $product['quantity']) {
+                $item['quantity'] = $product['quantity'];
+            }
+            
+            $items[$productId] = $item;
         }
     }
+    
+    return $items;
+}
+
+// Calculate cart total with discounts
+function getCartTotal() {
+    $items = getCartItems();
+    $total = 0;
+    
+    foreach ($items as $item) {
+        $total += $item['price'] * $item['quantity'];
+    }
+    
+    // Apply any active discounts
+    if (isset($_SESSION['coupon'])) {
+        $discount = calculateDiscount($total, $_SESSION['coupon']);
+        $total -= $discount;
+    }
+    
     return $total;
 }
 

@@ -3,45 +3,56 @@ session_start();
 require_once '../includes/config.php';
 require_once '../includes/functions.php';
 
+header('Content-Type: application/json');
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['product_id'])) {
     $productId = (int)$_POST['product_id'];
     $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 1;
     
-    // Validate quantity
     if ($quantity < 1) {
         $quantity = 1;
     }
     
-    // Get product details to check stock
-    $sql = "SELECT quantity FROM products WHERE id = ? AND status = 'active'";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("i", $productId);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
-    if ($result && $product = $result->fetch_assoc()) {
-        // Check if requested quantity is available
-        if ($product['quantity'] >= $quantity) {
-            if (addToCart($productId, $quantity)) {
-                $_SESSION['success_message'] = 'Product added to cart successfully!';
+    try {
+        $conn->begin_transaction();
+        
+        // Lock the row for update to prevent race conditions
+        $stmt = $conn->prepare("SELECT quantity FROM products WHERE id = ? AND status = 'active' FOR UPDATE");
+        $stmt->bind_param("i", $productId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($result && $product = $result->fetch_assoc()) {
+            if ($product['quantity'] >= $quantity) {
+                if (addToCart($productId, $quantity)) {
+                    $conn->commit();
+                    echo json_encode([
+                        'success' => true,
+                        'message' => 'Product added to cart successfully!',
+                        'cart_count' => count($_SESSION['cart'])
+                    ]);
+                    exit;
+                }
             } else {
-                $_SESSION['error_message'] = 'Failed to add product to cart.';
+                throw new Exception('Requested quantity not available in stock.');
             }
         } else {
-            $_SESSION['error_message'] = 'Requested quantity not available in stock.';
+            throw new Exception('Product not found or inactive.');
         }
-    } else {
-        $_SESSION['error_message'] = 'Product not found or inactive.';
+        
+        $conn->rollback();
+        throw new Exception('Failed to add product to cart.');
+    } catch (Exception $e) {
+        $conn->rollback();
+        echo json_encode([
+            'success' => false,
+            'message' => $e->getMessage()
+        ]);
+        exit;
     }
-    
-    // Redirect back
-    if (isset($_SERVER['HTTP_REFERER'])) {
-        header('Location: ' . $_SERVER['HTTP_REFERER']);
-    } else {
-        header('Location: ../shop.php');
-    }
-    exit;
-} else {
-    header('Location: ../shop.php');
-    exit;
 }
+
+echo json_encode([
+    'success' => false,
+    'message' => 'Invalid request'
+]);
