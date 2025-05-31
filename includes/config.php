@@ -1,9 +1,9 @@
 <?php
 // Database configuration
 define('DB_HOST', 'localhost'); 
-define('DB_USER', 'root');
-define('DB_PASS', '200202');
-define('DB_NAME', 'maplecart_db');
+define('DB_USER', 'root'); // Your MySQL username
+define('DB_PASS', '200202'); // Your MySQL password - common for MAMP
+define('DB_NAME', 'fruitables_db');
 
 // Connect to database
 $conn = new mysqli(DB_HOST, DB_USER, DB_PASS);
@@ -14,7 +14,7 @@ if ($conn->connect_error) {
 }
 
 // Create database if not exists
-$sql = "CREATE DATABASE IF NOT EXISTS " . DB_NAME . " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
+$sql = "CREATE DATABASE IF NOT EXISTS " . DB_NAME . " CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci";
 if ($conn->query($sql) === FALSE) {
     die("Error creating database: " . $conn->error);
 }
@@ -42,20 +42,20 @@ $tables = [
         status ENUM('active', 'inactive') DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "categories" => "CREATE TABLE IF NOT EXISTS categories (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
         slug VARCHAR(100) NOT NULL UNIQUE,
+        parent_id INT(11) UNSIGNED DEFAULT NULL,
         description TEXT,
         image VARCHAR(255),
-        parent_id INT(11) UNSIGNED DEFAULT NULL,
         status ENUM('active', 'inactive') DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "products" => "CREATE TABLE IF NOT EXISTS products (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -73,7 +73,7 @@ $tables = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "orders" => "CREATE TABLE IF NOT EXISTS orders (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -96,7 +96,7 @@ $tables = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "order_items" => "CREATE TABLE IF NOT EXISTS order_items (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -109,7 +109,7 @@ $tables = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "wishlist" => "CREATE TABLE IF NOT EXISTS wishlist (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -119,7 +119,7 @@ $tables = [
         UNIQUE KEY user_product (user_id, product_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
 
     "coupons" => "CREATE TABLE IF NOT EXISTS coupons (
         id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -135,14 +135,7 @@ $tables = [
         status ENUM('active', 'inactive') DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
-
-    "newsletter_subscribers" => "CREATE TABLE IF NOT EXISTS newsletter_subscribers (
-        id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        email VARCHAR(100) NOT NULL UNIQUE,
-        status ENUM('active', 'inactive') DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
 ];
 
 // Create tables
@@ -158,5 +151,47 @@ if ($checkAdmin->num_rows == 0) {
     $adminPassword = password_hash('admin123', PASSWORD_DEFAULT);
     $sql = "INSERT INTO users (name, email, password, role) VALUES ('Admin', 'admin@maplecart.com', '$adminPassword', 'admin')";
     $conn->query($sql);
+}
+
+// Insert sample categories if not exists
+$checkCategories = $conn->query("SELECT id FROM categories LIMIT 1");
+if ($checkCategories->num_rows == 0) {
+    $categories = [
+        ['Food & Beverages', 'food-beverages', NULL],
+        ['Maple Syrup & Products', 'maple-syrup-products', 1],
+        ['Snack Foods', 'snack-foods', 1],
+        ['Health Foods', 'health-foods', 1],
+        ['Beverages', 'beverages', 1],
+        ['Packaged Foods', 'packaged-foods', 1],
+        ['Beauty & Personal Care', 'beauty-personal-care', NULL],
+        ['Skincare Products', 'skincare-products', 7],
+        ['Hair Care', 'hair-care', 7],
+        ['Bath & Body', 'bath-body', 7],
+        ['Cosmetics', 'cosmetics', 7]
+    ];
+
+    foreach ($categories as $category) {
+        $name = $category[0];
+        $slug = $category[1];
+        $parentId = $category[2];
+        $sql = "INSERT INTO categories (name, slug, parent_id) VALUES ('$name', '$slug', " . ($parentId ? $parentId : "NULL") . ")";
+        $conn->query($sql);
+    }
+}
+
+// Insert sample products if not exists
+$checkProducts = $conn->query("SELECT id FROM products LIMIT 1");
+if ($checkProducts->num_rows == 0) {
+    $products = [
+        [2, 'Pure Maple Syrup', 'pure-maple-syrup', 'Premium Canadian maple syrup', 19.99, 100, 1],
+        [2, 'Maple Cookies', 'maple-cookies', 'Delicious maple-flavored cookies', 9.99, 200, 1],
+        [8, 'Maple Body Lotion', 'maple-body-lotion', 'Nourishing body lotion with maple extract', 24.99, 50, 1]
+    ];
+
+    foreach ($products as $product) {
+        $sql = "INSERT INTO products (category_id, name, slug, description, price, quantity, is_featured) 
+                VALUES ($product[0], '$product[1]', '$product[2]', '$product[3]', $product[4], $product[5], $product[6])";
+        $conn->query($sql);
+    }
 }
 ?>
