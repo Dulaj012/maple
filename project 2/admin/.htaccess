@@ -1,0 +1,25 @@
+# Enable URL rewriting
+RewriteEngine On
+
+# Base directory for admin
+RewriteBase /admin/
+
+# Prevent directory listing
+Options -Indexes
+
+# Handle PHP files without extension
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^([^\.]+)$ $1.php [NC,L]
+
+# Set default character set
+AddDefaultCharset UTF-8
+
+# Enable PHP error reporting
+php_flag display_errors on
+php_value error_reporting E_ALL
+
+# Secure admin directory
+<FilesMatch "^.*$">
+    Require all granted
+</FilesMatch>

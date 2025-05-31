@@ -1,0 +1,18 @@
+<?php
+session_start();
+require_once '../includes/functions.php';
+
+if (isset($_GET['id'])) {
+    $productId = (int)$_GET['id'];
+    
+    if (removeCartItem($productId)) {
+        $_SESSION['success_message'] = 'Item removed from cart successfully.';
+    } else {
+        $_SESSION['error_message'] = 'Failed to remove item from cart.';
+    }
+}
+
+// Redirect back to cart page
+header('Location: ../cart.php');
+exit;
+?>
